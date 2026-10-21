@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
-use ::token::{Token, TokenClient};
 use payroll::{Payroll, PayrollClient};
 use proof_verifier::{ProofVerifier, ProofVerifierClient, VerificationKey};
 use salary_commitment::{SalaryCommitmentContract, SalaryCommitmentContractClient};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, BytesN, Env, Vec};
+use token::{Token, TokenClient};
 
 fn mock_vk(env: &Env) -> VerificationKey {
     VerificationKey {

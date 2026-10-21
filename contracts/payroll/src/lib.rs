@@ -1,8 +1,8 @@
 #![no_std]
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token as soroban_token, Address, Bytes,
-    BytesN, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token as soroban_token,
+    Address, Bytes, BytesN, Env, String, Symbol, Vec,
 };
 
 use pause_manager::PauseManagerClient;
@@ -58,14 +58,12 @@ pub use employee_record_version::{
 
 pub mod bulk_employee_edit;
 pub use bulk_employee_edit::{
-    check_bulk_edit_conflicts, increment_bulk_employee_versions, BulkEmployeeEdit,
-    BulkEditError, BulkEditResult,
+    check_bulk_edit_conflicts, increment_bulk_employee_versions, BulkEditError, BulkEditResult,
+    BulkEmployeeEdit,
 };
 
 pub mod payment_instruction_expiry;
-pub use payment_instruction_expiry::{
-    enforce_payment_instruction_expiry, PaymentInstruction,
-};
+pub use payment_instruction_expiry::{enforce_payment_instruction_expiry, PaymentInstruction};
 
 pub mod employee_suspension_rules;
 pub use employee_suspension_rules::{
@@ -171,8 +169,9 @@ pub use cross_currency_rounding::{
 
 /// Scoped emergency pause recovery (#349).
 pub mod scoped_pause;
-pub use scoped_pause::{activate_scope_pause, assert_scope_active, clear_scope_pause,
-    is_scope_paused, PauseScope};
+pub use scoped_pause::{
+    activate_scope_pause, assert_scope_active, clear_scope_pause, is_scope_paused, PauseScope,
+};
 
 /// Emergency payroll pause authorization (#698).
 pub mod emergency_pause_authorization;
@@ -217,7 +216,7 @@ pub use stalled_run_recovery::{
 pub mod historic_data_safeguards;
 pub use historic_data_safeguards::{
     HistoricDataAccess, HistoricDataError, HistoricDataQuery, HistoricDataSafeguard,
-    HistoricDataScope, MAX_HISTORIC_QUERY_RANGE, MAX_HISTORIC_PAGE_SIZE,
+    HistoricDataScope, MAX_HISTORIC_PAGE_SIZE, MAX_HISTORIC_QUERY_RANGE,
 };
 
 /// Temporary approver delegation controls (#636).
@@ -252,7 +251,9 @@ pub struct Payroll;
 /// Pay-group effective-date validation (#783).
 pub mod pay_group_effective_date;
 mod validation_entrypoints;
-pub use pay_group_effective_date::{PayGroupDateError, PayGroupEffectivePeriod, PayGroupValidation};
+pub use pay_group_effective_date::{
+    PayGroupDateError, PayGroupEffectivePeriod, PayGroupValidation,
+};
 
 /// Payout confirmation reconciliation preflight (#784).
 pub mod payout_confirmation;
@@ -270,6 +271,14 @@ pub mod beneficiary_verification;
 pub use beneficiary_verification::{
     BeneficiaryStatusValidation, BeneficiaryVerification, BeneficiaryVerificationError,
     BeneficiaryVerificationStatus,
+};
+
+/// Payout ordering validation against committed recipient ordering (#815).
+pub mod payout_ordering_validation;
+pub use payout_ordering_validation::{
+    assert_payout_ordering, check_payout_ordering, commit_recipient_ordering,
+    CommittedRecipientOrdering, PayoutOrderingCheck, PayoutOrderingError, PayoutOrderingKey,
+    MAX_ORDERING_SIZE,
 };
 
 #[contracttype]
@@ -691,6 +700,23 @@ pub struct StaleApprovalStatus {
     pub is_stale: bool,
     pub reviewed_at: u64,
     pub expires_at: u64,
+}
+
+/// Errors from [`Payroll::check_stale_approval`] (#820).
+///
+/// `Result<(), ()>` cannot be used as a Soroban contract return type — `()` is
+/// not a valid contract error — so these typed codes replace the unit `Err`.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum StaleApprovalCheckError {
+    /// Approval exists but is still within the validity window, or the
+    /// decision is not `Approved` (rejections are never stale).
+    NotStale = 8201,
+    /// Caller is not the registered contract admin.
+    Unauthorized = 8202,
+    /// No review/approval record exists for the given run.
+    NoApproval = 8203,
 }
 
 // ── Issue #342: dispute freeze/thaw controls ─────────────────────────────────
@@ -1968,10 +1994,7 @@ impl Payroll {
     ///
     /// Returns `None` when the run does not exist or is not pending, so
     /// integrators can distinguish "nothing to recover" from "stalled, act now".
-    pub fn get_stalled_run_recovery(
-        e: Env,
-        run_id: u64,
-    ) -> Option<StalledRunRecoveryAssessment> {
+    pub fn get_stalled_run_recovery(e: Env, run_id: u64) -> Option<StalledRunRecoveryAssessment> {
         stalled_run_recovery::assess(&e, run_id)
     }
 
@@ -2025,11 +2048,7 @@ impl Payroll {
     /// [`MAX_HISTORIC_QUERY_RANGE`], and the page size must not exceed
     /// [`MAX_HISTORIC_PAGE_SIZE`]. Returns only opaque run ids so no payroll
     /// values or employee identities are disclosed.
-    pub fn get_historic_run_ids(
-        e: Env,
-        caller: Address,
-        query: HistoricDataQuery,
-    ) -> Vec<u64> {
+    pub fn get_historic_run_ids(e: Env, caller: Address, query: HistoricDataQuery) -> Vec<u64> {
         historic_data_safeguards::retrieve_run_ids(&e, &caller, query)
     }
 
@@ -2095,7 +2114,9 @@ impl Payroll {
             .persistent()
             .has(&DataKey::RunNonce(reference.clone()))
         {
-            panic!("Execution reference collision: this nonce has already been used by a payroll run");
+            panic!(
+                "Execution reference collision: this nonce has already been used by a payroll run"
+            );
         }
         if e.storage()
             .persistent()
@@ -2167,11 +2188,7 @@ impl Payroll {
     /// Only the payroll admin may register sources. Once registered, sources
     /// can submit payroll batches. Duplicate registration updates the source
     /// metadata.
-    pub fn register_import_source(
-        e: Env,
-        source_address: Address,
-        source_type: u32,
-    ) {
+    pub fn register_import_source(e: Env, source_address: Address, source_type: u32) {
         let source_type = match source_type {
             0 => import_source::ImportSourceType::ExternalService,
             1 => import_source::ImportSourceType::InternalSource,
@@ -2335,11 +2352,7 @@ impl Payroll {
             if b < 32 || b > 126 {
                 panic!("Employee identifier contains invalid characters: must be printable ASCII");
             }
-            out_buf[i] = if b.is_ascii_lowercase() {
-                b - 32
-            } else {
-                b
-            };
+            out_buf[i] = if b.is_ascii_lowercase() { b - 32 } else { b };
         }
 
         let normalized_str = core::str::from_utf8(&out_buf[..trimmed_len])
@@ -4097,9 +4110,7 @@ impl Payroll {
 
     pub fn get_payroll_run(e: Env, run_id: u64) -> PayrollRun {
         Self::validate_run_id(run_id);
-        if e.storage()
-            .persistent()
-            .has(&DataKey::ArchivedRun(run_id))
+        if e.storage().persistent().has(&DataKey::ArchivedRun(run_id))
             || e.storage()
                 .persistent()
                 .has(&DataKey::ArchiveMarker(run_id))
@@ -4429,6 +4440,23 @@ impl Payroll {
         // #379 ? reject a batch that pays the same wallet twice.
         Self::validate_no_duplicate_employees(&employees);
 
+        // #815 — validate payout ordering against committed recipient ordering.
+        // This is opt-in: if no commitment exists for this nonce the call is a
+        // no-op.  When a commitment exists the payout array must match exactly.
+        if let Err(e815) =
+            payout_ordering_validation::assert_payout_ordering(&e, &nonce, &employees)
+        {
+            match e815 {
+                PayoutOrderingError::LengthMismatch => panic!(
+                    "Payout ordering mismatch: recipient count does not match committed ordering"
+                ),
+                PayoutOrderingError::OrderMismatch => panic!(
+                    "Payout ordering mismatch: recipient positions do not match committed ordering"
+                ),
+                _ => panic!("Payout ordering validation failed"),
+            }
+        }
+
         let mut total: i128 = 0;
         for i in 0..count {
             let amt = amounts.get(i).unwrap();
@@ -4528,11 +4556,7 @@ impl Payroll {
         Self::add_locked_funds(&e, addrs.token.clone(), expected_total_spend);
 
         payroll_events::emit_run_prepared(&e, run_id, expected_total_spend);
-        Self::emit_treasury_balance_snapshot(
-            &e,
-            addrs.token,
-            Symbol::new(&e, "run_prepared"),
-        );
+        Self::emit_treasury_balance_snapshot(&e, addrs.token, Symbol::new(&e, "run_prepared"));
 
         run_id
     }
@@ -4773,11 +4797,7 @@ impl Payroll {
             (symbol_short!("payroll"), Symbol::new(&e, "run_finalized")),
             (run_id, pending_run.total_amount),
         );
-        Self::emit_treasury_balance_snapshot(
-            &e,
-            addrs.token,
-            Symbol::new(&e, "run_finalized"),
-        );
+        Self::emit_treasury_balance_snapshot(&e, addrs.token, Symbol::new(&e, "run_finalized"));
     }
 
     /// Cancel a pending payroll run without executing any payments (issue #198).
@@ -4853,11 +4873,7 @@ impl Payroll {
             (symbol_short!("payroll"), Symbol::new(&e, "run_cancelled")),
             (run_id, reason),
         );
-        Self::emit_treasury_balance_snapshot(
-            &e,
-            addrs.token,
-            Symbol::new(&e, "run_cancelled"),
-        );
+        Self::emit_treasury_balance_snapshot(&e, addrs.token, Symbol::new(&e, "run_cancelled"));
     }
 
     /// Alias for cancel_payroll_run_with_reason
@@ -5043,6 +5059,22 @@ impl Payroll {
         // #379 ? reject a batch that pays the same wallet twice.
         Self::validate_no_duplicate_employees(&employees);
 
+        // #815 — validate payout ordering against committed recipient ordering.
+        // Opt-in: no commitment for this nonce → passes silently.
+        if let Err(e815) =
+            payout_ordering_validation::assert_payout_ordering(&e, &nonce, &employees)
+        {
+            match e815 {
+                PayoutOrderingError::LengthMismatch => panic!(
+                    "Payout ordering mismatch: recipient count does not match committed ordering"
+                ),
+                PayoutOrderingError::OrderMismatch => panic!(
+                    "Payout ordering mismatch: recipient positions do not match committed ordering"
+                ),
+                _ => panic!("Payout ordering validation failed"),
+            }
+        }
+
         let mut total: i128 = 0;
         for i in 0..count {
             let amt = amounts.get(i).unwrap();
@@ -5192,11 +5224,7 @@ impl Payroll {
         Self::set_metadata_version(&e, run_id, 1u32, BytesN::from_array(&e, &[0u8; 32]));
 
         payroll_events::emit_run_executed(&e, run_id, expected_total_spend);
-        Self::emit_treasury_balance_snapshot(
-            &e,
-            addrs.token,
-            Symbol::new(&e, "run_executed"),
-        );
+        Self::emit_treasury_balance_snapshot(&e, addrs.token, Symbol::new(&e, "run_executed"));
 
         run_id
     }
@@ -5276,6 +5304,22 @@ impl Payroll {
         };
 
         Self::validate_no_duplicate_employees(&employees);
+
+        // #815 — validate payout ordering against committed recipient ordering.
+        // Opt-in: no commitment for this nonce → passes silently.
+        if let Err(e815) =
+            payout_ordering_validation::assert_payout_ordering(&e, &nonce, &employees)
+        {
+            match e815 {
+                PayoutOrderingError::LengthMismatch => panic!(
+                    "Payout ordering mismatch: recipient count does not match committed ordering"
+                ),
+                PayoutOrderingError::OrderMismatch => panic!(
+                    "Payout ordering mismatch: recipient positions do not match committed ordering"
+                ),
+                _ => panic!("Payout ordering validation failed"),
+            }
+        }
 
         let mut total: i128 = 0;
         for i in 0..count {
@@ -5819,6 +5863,27 @@ impl Payroll {
 
         Self::validate_no_duplicate_employees(&employees);
 
+        // #815 — validate payout ordering against committed recipient ordering.
+        // Only checked on the first chunk (start_index == 0) to avoid
+        // consuming the commitment prematurely on a resumed batch; the first
+        // chunk performs the full ordering check and removes the commitment so
+        // subsequent chunks skip it (no commitment → opt-in pass).
+        if start_index == 0 {
+            if let Err(e815) =
+                payout_ordering_validation::assert_payout_ordering(&e, &nonce, &employees)
+            {
+                match e815 {
+                    PayoutOrderingError::LengthMismatch => panic!(
+                        "Payout ordering mismatch: recipient count does not match committed ordering"
+                    ),
+                    PayoutOrderingError::OrderMismatch => panic!(
+                        "Payout ordering mismatch: recipient positions do not match committed ordering"
+                    ),
+                    _ => panic!("Payout ordering validation failed"),
+                }
+            }
+        }
+
         let commitment_client = SalaryCommitmentContractClient::new(&e, &addrs.commitment);
         for employee in employees.iter() {
             if !commitment_client.is_commitment_active(&employee) {
@@ -6113,10 +6178,7 @@ impl Payroll {
         // payload carries the ceilings themselves — configuration values, never
         // payroll data — so operators can reconstruct the active policy.
         e.events().publish(
-            (
-                symbol_short!("payroll"),
-                Symbol::new(&e, "corr_limits_set"),
-            ),
+            (symbol_short!("payroll"), Symbol::new(&e, "corr_limits_set")),
             (
                 admin.clone(),
                 max_corrections_per_period,
@@ -6568,11 +6630,11 @@ impl Payroll {
     /// employee addresses or salary figures.
     pub fn get_draft_lock_owner(e: Env, draft_id: u64) -> Option<Address> {
         Self::validate_draft_id(draft_id);
-        let draft: PayrollRunDraft = e
-            .storage()
-            .persistent()
-            .get(&DataKey::RunDraft(draft_id))?;
-        if matches!(draft.state, RunDraftState::Finalized | RunDraftState::Submitted) {
+        let draft: PayrollRunDraft = e.storage().persistent().get(&DataKey::RunDraft(draft_id))?;
+        if matches!(
+            draft.state,
+            RunDraftState::Finalized | RunDraftState::Submitted
+        ) {
             Some(draft.admin)
         } else {
             None
@@ -6956,8 +7018,7 @@ impl Payroll {
         admin.require_auth();
 
         let cooldown_key = DataKey::PeriodReopenCooldown(period_label.clone());
-        if e
-            .storage()
+        if e.storage()
             .persistent()
             .has(&DataKey::PeriodFreeze(period_label.clone()))
         {
@@ -7634,6 +7695,77 @@ impl Payroll {
         run.note_hash == expected_hash
     }
 
+    // ── Issue #815: Payout ordering validation ───────────────────────────────
+
+    /// Commit the canonical recipient ordering for a payroll batch identified
+    /// by `nonce`.
+    ///
+    /// The committed ordering is an exact, positional list of expected payout
+    /// recipient addresses. When a commitment exists for a nonce,
+    /// `prepare_payroll_run` / `batch_process_payroll*` verify the supplied
+    /// `employees` array matches that ordering before executing any payments.
+    ///
+    /// * This is **opt-in**: batches that have no prior commitment are
+    ///   unaffected and continue to execute as before.
+    /// * A commitment for a given `nonce` may only be created once; attempting
+    ///   to recommit for the same nonce fails with an actionable error.
+    /// * The commitment is consumed (deleted) by the first successful payout
+    ///   execution for the same nonce.
+    ///
+    /// Only the registered admin may call.
+    pub fn commit_recipient_ordering(
+        e: Env,
+        admin: Address,
+        nonce: BytesN<32>,
+        recipients: Vec<Address>,
+    ) {
+        let addrs: ContractAddresses = e
+            .storage()
+            .persistent()
+            .get(&DataKey::Addresses)
+            .expect("Not initialized");
+        if admin != addrs.admin {
+            panic!("Unauthorized: only the admin may commit a recipient ordering");
+        }
+        admin.require_auth();
+
+        if let Err(err) =
+            payout_ordering_validation::commit_recipient_ordering(&e, &nonce, &recipients)
+        {
+            match err {
+                PayoutOrderingError::EmptyRecipients => {
+                    panic!("Recipient ordering must contain at least one recipient")
+                }
+                PayoutOrderingError::TooManyRecipients => {
+                    panic!("Recipient ordering exceeds the maximum batch size")
+                }
+                PayoutOrderingError::CommitmentAlreadyExists => {
+                    panic!("A recipient ordering has already been committed for this nonce")
+                }
+                _ => panic!("Failed to commit recipient ordering"),
+            }
+        }
+    }
+
+    /// Read-only preflight: check whether the supplied payout array matches
+    /// the committed recipient ordering for `nonce`.
+    ///
+    /// Returns a [`PayoutOrderingCheck`] snapshot that integrators can inspect
+    /// before submitting the execution transaction. Does **not** consume the
+    /// commitment or emit events.
+    ///
+    /// When no commitment exists for `nonce`, the returned snapshot has
+    /// `commitment_found: false` and `all_passed()` returns `false`; this
+    /// faithfully reflects that the commitment is absent (the actual execution
+    /// will succeed because the guard is opt-in).
+    pub fn check_payout_ordering(
+        e: Env,
+        nonce: BytesN<32>,
+        payout_recipients: Vec<Address>,
+    ) -> PayoutOrderingCheck {
+        payout_ordering_validation::check_payout_ordering(&e, &nonce, &payout_recipients)
+    }
+
     // ?? Issue #347: confidential memo hash registry ?????????????????????????
 
     /// Register a confidential memo's hash for a payroll batch, scoped to
@@ -7863,7 +7995,10 @@ impl Payroll {
             let amt = amounts.get(i).unwrap();
             if amt < minimum {
                 e.events().publish(
-                    (symbol_short!("payroll"), Symbol::new(e, "min_payout_violation")),
+                    (
+                        symbol_short!("payroll"),
+                        Symbol::new(e, "min_payout_violation"),
+                    ),
                     (minimum,),
                 );
                 panic!("Payout amount below minimum threshold");
@@ -8145,12 +8280,7 @@ impl Payroll {
 
     /// Reject a proposed inclusive calendar range that intersects another
     /// configured period's range. Reconfiguration of the same label is allowed.
-    fn assert_no_settlement_window_overlap(
-        e: &Env,
-        period: &Symbol,
-        open_at: u64,
-        close_at: u64,
-    ) {
+    fn assert_no_settlement_window_overlap(e: &Env, period: &Symbol, open_at: u64, close_at: u64) {
         let periods: Vec<Symbol> = e
             .storage()
             .persistent()
@@ -8651,11 +8781,7 @@ impl Payroll {
         );
 
         payroll_events::emit_settlement_window_expired(&e, run_id, period, now);
-        Self::emit_treasury_balance_snapshot(
-            &e,
-            addrs.token,
-            Symbol::new(&e, "run_expired"),
-        );
+        Self::emit_treasury_balance_snapshot(&e, addrs.token, Symbol::new(&e, "run_expired"));
     }
 
     // ?? Issue #146: archived payroll run queries ??????????????????????????????
@@ -10355,10 +10481,7 @@ impl Payroll {
     /// enough treasury balance after pending locks and the configured buffer.
     /// The returned blocker gives SDKs an actionable reason when any
     /// prerequisite is missing.
-    pub fn check_funding_source_readiness(
-        e: Env,
-        required_amount: i128,
-    ) -> FundingSourceReadiness {
+    pub fn check_funding_source_readiness(e: Env, required_amount: i128) -> FundingSourceReadiness {
         let blocked = |blocker, available_balance| FundingSourceReadiness {
             ready: false,
             blocker,
@@ -10526,15 +10649,15 @@ impl Payroll {
     /// Read-only check for whether a payroll run holds a stale approval.
     ///
     /// Returns `Ok` when the approval is stale (an `Approved` decision whose
-    /// `reviewed_at` is older than `max_age_seconds`), and `Err` otherwise.
-    /// Does not modify any state — use [`cleanup_stale_approval`] to actually
-    /// remove a stale approval record.
+    /// `reviewed_at` is older than `max_age_seconds`), and
+    /// [`StaleApprovalCheckError`] otherwise. Does not modify any state — use
+    /// [`cleanup_stale_approval`] to actually remove a stale approval record.
     pub fn check_stale_approval(
         e: Env,
         admin: Address,
         run_id: u64,
         max_age_seconds: u64,
-    ) -> Result<(), ()> {
+    ) -> Result<(), StaleApprovalCheckError> {
         Self::require_not_paused(&e);
         Self::validate_run_id(run_id);
 
@@ -10544,24 +10667,26 @@ impl Payroll {
             .get(&DataKey::Addresses)
             .expect("Not initialized");
         if admin != addrs.admin {
-            panic!("Unauthorized");
+            return Err(StaleApprovalCheckError::Unauthorized);
         }
         admin.require_auth();
 
-        let review: RunReview = e
+        let Some(review) = e
             .storage()
             .persistent()
-            .get(&DataKey::RunReview(run_id))
-            .unwrap_or_else(|| panic!("No approval exists for this payroll run"));
+            .get::<_, RunReview>(&DataKey::RunReview(run_id))
+        else {
+            return Err(StaleApprovalCheckError::NoApproval);
+        };
 
         // Reuse the single definition of staleness so try_cleanup and the
         // finalize-time guard can never disagree about the cutoff.
         if review.decision != ReviewDecision::Approved {
-            return Err(());
+            return Err(StaleApprovalCheckError::NotStale);
         }
         let expiry_time = review.reviewed_at.saturating_add(max_age_seconds);
         if e.ledger().timestamp() <= expiry_time {
-            return Err(());
+            return Err(StaleApprovalCheckError::NotStale);
         }
 
         Ok(())
@@ -10998,6 +11123,24 @@ impl Payroll {
     /// - If the batch is in a pending run state (`PendingRun(run_id)`), its `prepared_at` timestamp is returned.
     /// - If the batch has been executed (`PayrollRun(run_id)`), its `executed_at` timestamp is returned.
     /// - If the batch does not exist or has not been locked, `None` is returned.
+    pub fn get_batch_lock_timestamp(e: Env, run_id: u64) -> Option<u64> {
+        if let Some(pending) = e
+            .storage()
+            .persistent()
+            .get::<_, PendingPayrollRun>(&DataKey::PendingRun(run_id))
+        {
+            return Some(pending.prepared_at);
+        }
+        if let Some(run) = e
+            .storage()
+            .persistent()
+            .get::<_, PayrollRun>(&DataKey::PayrollRun(run_id))
+        {
+            return Some(run.executed_at);
+        }
+        None
+    }
+
     // ?? Issue #402: Safe Treasury Balance Summary View ???????????????????????
 
     /// Return aggregate treasury balance summary for a given asset token (#402).
@@ -11420,11 +11563,8 @@ impl Payroll {
         admin.require_auth();
 
         let key = MultiBatchKey::MultiBatchProgress(execution_id.clone());
-        let mut progress: MultiBatchExecutionProgress = e
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| {
+        let mut progress: MultiBatchExecutionProgress =
+            e.storage().persistent().get(&key).unwrap_or_else(|| {
                 panic!("Multi-batch execution not found: call begin_multi_batch_execution first")
             });
 
@@ -11447,7 +11587,9 @@ impl Payroll {
                 panic!("Multi-batch progress regression: new progress is behind stored progress")
             }
             Err(MultiBatchProgressIssue::NoForwardProgress) => {
-                panic!("Multi-batch progress must move forward: no new batches or payments recorded")
+                panic!(
+                    "Multi-batch progress must move forward: no new batches or payments recorded"
+                )
             }
             Err(_) => panic!("Invalid multi-batch progress record"),
         }
@@ -11522,11 +11664,8 @@ impl Payroll {
         admin.require_auth();
 
         let key = MultiBatchKey::MultiBatchProgress(execution_id.clone());
-        let mut progress: MultiBatchExecutionProgress = e
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| {
+        let mut progress: MultiBatchExecutionProgress =
+            e.storage().persistent().get(&key).unwrap_or_else(|| {
                 panic!("Multi-batch execution not found: call begin_multi_batch_execution first")
             });
 
@@ -11563,7 +11702,10 @@ impl Payroll {
     /// # Panics
     /// - `"Multi-batch execution not found: call begin_multi_batch_execution first"` —
     ///   unknown `execution_id`.
-    pub fn get_multi_batch_progress(e: Env, execution_id: BytesN<32>) -> MultiBatchExecutionProgress {
+    pub fn get_multi_batch_progress(
+        e: Env,
+        execution_id: BytesN<32>,
+    ) -> MultiBatchExecutionProgress {
         let key = MultiBatchKey::MultiBatchProgress(execution_id);
         e.storage().persistent().get(&key).unwrap_or_else(|| {
             panic!("Multi-batch execution not found: call begin_multi_batch_execution first")
@@ -12239,7 +12381,10 @@ mod tests {
 
         // 2. Finalized draft is locked -> returns Some(admin)
         payroll_client.finalize_run_draft(&admin, &draft_id);
-        assert_eq!(payroll_client.get_draft_lock_owner(&draft_id), Some(admin.clone()));
+        assert_eq!(
+            payroll_client.get_draft_lock_owner(&draft_id),
+            Some(admin.clone())
+        );
 
         // 3. Submitted draft remains locked -> returns Some(admin)
         payroll_client.submit_run_draft(&admin, &draft_id);
@@ -16031,7 +16176,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Employee identifier contains invalid characters: must be printable ASCII")]
+    #[should_panic(
+        expected = "Employee identifier contains invalid characters: must be printable ASCII"
+    )]
     fn test_employee_identifier_normalization_rejects_non_printable() {
         let env = Env::default();
         let (payroll_client, _admin, _treasury, _treasury_owner, _employee) =

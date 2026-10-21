@@ -14,12 +14,12 @@
 
 #![cfg(test)]
 
-use ::token::{Token, TokenClient};
 use payroll::{Payroll, PayrollClient, DEFAULT_APPROVAL_EXPIRY_SECONDS};
 use proof_verifier::{ProofVerifier, ProofVerifierClient, VerificationKey};
 use salary_commitment::{SalaryCommitmentContract, SalaryCommitmentContractClient};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{Address, BytesN, Env, Vec};
+use token::{Token, TokenClient};
 
 fn mock_proof(env: &Env) -> BytesN<256> {
     BytesN::from_array(env, &[0u8; 256])
@@ -223,7 +223,7 @@ fn cleanup_of_in_window_approval_is_rejected_and_record_survives() {
 
     // Freshly approved: well inside the window, nothing is stale.
     let result =
-        payroll.check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS);
+        payroll.try_check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS);
     assert!(result.is_err(), "an in-window approval is not stale");
 
     assert!(
@@ -246,7 +246,7 @@ fn cleanup_with_no_existing_approval_fails_cleanly() {
     let run_id = payroll.prepare_payroll_run(&proofs, &amounts, &employees, &10_000, &nonce, &None);
 
     let result =
-        payroll.check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS);
+        payroll.try_check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS);
     assert!(result.is_err());
 }
 
@@ -274,7 +274,7 @@ fn cleanup_never_removes_a_rejection_even_when_old() {
         .get_stale_approval_status(&run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS)
         .is_none());
     assert!(payroll
-        .check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS)
+        .try_check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS)
         .is_err());
 
     assert!(
@@ -300,7 +300,7 @@ fn cleanup_rejects_non_admin_caller() {
 
     let impostor = Address::generate(&env);
     assert!(payroll
-        .check_stale_approval(&impostor, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS)
+        .try_check_stale_approval(&impostor, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS)
         .is_err());
     assert!(
         payroll.get_run_review(&run_id).is_some(),
@@ -327,7 +327,7 @@ fn cleanup_respects_exact_expiry_boundary() {
     });
     assert!(!payroll.is_payroll_approval_expired(&run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS));
     assert!(payroll
-        .check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS)
+        .try_check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS)
         .is_err());
     assert!(payroll.get_run_review(&run_id).is_some());
 
@@ -335,7 +335,15 @@ fn cleanup_respects_exact_expiry_boundary() {
     env.ledger().with_mut(|li| {
         li.timestamp += 1;
     });
-    }
+    assert!(payroll.is_payroll_approval_expired(&run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS));
+    assert!(payroll
+        .try_check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS)
+        .is_ok());
+    let cleaned = payroll.cleanup_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS);
+    assert!(cleaned.removed);
+    assert!(payroll.get_run_review(&run_id).is_none());
+}
+
 /// Rejection when contract state is stale or invalid.
 #[test]
 fn check_stale_approval_rejection_invalid_state() {
@@ -345,14 +353,14 @@ fn check_stale_approval_rejection_invalid_state() {
     let reviewer = Address::generate(&env);
     payroll.add_reviewer(&admin, &reviewer);
 
-    let (proofs, amounts, employees) = one_payment(&env, &employee);
+    let (proofs, amounts, employees) = single_payment_batch(&env, &employee, 10_000);
     let nonce = test_nonce(&env, 51);
     let run_id = payroll.prepare_payroll_run(&proofs, &amounts, &employees, &10_000, &nonce, &None);
     payroll.reject_payroll_run(&reviewer, &run_id, &soroban_sdk::Symbol::new(&env, "no"));
 
     // A rejection decision is never stale under this definition.
     let result =
-        payroll.check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS);
+        payroll.try_check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS);
     assert!(result.is_err(), "rejection should not be considered stale");
     assert!(
         payroll.get_run_review(&run_id).is_some(),
@@ -370,7 +378,7 @@ fn check_stale_approval_boundary_case() {
     let reviewer = Address::generate(&env);
     payroll.add_reviewer(&admin, &reviewer);
 
-    let (proofs, amounts, employees) = one_payment(&env, &employee);
+    let (proofs, amounts, employees) = single_payment_batch(&env, &employee, 10_000);
     let nonce = test_nonce(&env, 52);
     let run_id = payroll.prepare_payroll_run(&proofs, &amounts, &employees, &10_000, &nonce, &None);
     payroll.approve_payroll_run(&reviewer, &run_id);
@@ -381,16 +389,18 @@ fn check_stale_approval_boundary_case() {
     });
     assert!(!payroll.is_payroll_approval_expired(&run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS));
     let result =
-        payroll.check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS);
+        payroll.try_check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS);
     assert!(result.is_err(), "approval at exact boundary is not stale");
     assert!(payroll.get_run_review(&run_id).is_some());
 
-    // One tick later: stale, and the check would return Ok (but we do not call
-    // cleanup_stale_approval here — that is a separate step).
+    // One tick later: stale.
     env.ledger().with_mut(|li| {
         li.timestamp += 1;
     });
     assert!(payroll.is_payroll_approval_expired(&run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS));
+    assert!(payroll
+        .try_check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS)
+        .is_ok());
 }
 
 /// Successful approval with valid current state is not stale.
@@ -402,15 +412,18 @@ fn check_stale_approval_valid_approval_not_stale() {
     let reviewer = Address::generate(&env);
     payroll.add_reviewer(&admin, &reviewer);
 
-    let (proofs, amounts, employees) = one_payment(&env, &employee);
+    let (proofs, amounts, employees) = single_payment_batch(&env, &employee, 10_000);
     let nonce = test_nonce(&env, 50);
     let run_id = payroll.prepare_payroll_run(&proofs, &amounts, &employees, &10_000, &nonce, &None);
     payroll.approve_payroll_run(&reviewer, &run_id);
 
     // Freshly approved: well inside the window, nothing is stale.
     let result =
-        payroll.check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS);
-    assert!(result.is_err(), "valid current approval should not be considered stale");
+        payroll.try_check_stale_approval(&admin, &run_id, &DEFAULT_APPROVAL_EXPIRY_SECONDS);
+    assert!(
+        result.is_err(),
+        "valid current approval should not be considered stale"
+    );
     assert!(
         payroll.get_run_review(&run_id).is_some(),
         "valid approval must survive the check"

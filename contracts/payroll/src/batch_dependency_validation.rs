@@ -96,7 +96,9 @@ fn check_cycle(
 ) -> Result<(), BatchDependencyError> {
     visited.set(node, 1); // Mark as visiting
 
-    let step = steps.get(node).ok_or(BatchDependencyError::InvalidDependency)?;
+    let step = steps
+        .get(node)
+        .ok_or(BatchDependencyError::InvalidDependency)?;
 
     for dep_idx in step.dependencies.iter() {
         let dep = dep_idx;
@@ -161,7 +163,9 @@ pub fn are_dependencies_completed(
 }
 
 /// Validate a complete batch and return validation result.
-pub fn validate_batch(steps: &Vec<BatchStep>) -> Result<BatchValidationResult, BatchDependencyError> {
+pub fn validate_batch(
+    steps: &Vec<BatchStep>,
+) -> Result<BatchValidationResult, BatchDependencyError> {
     if steps.is_empty() {
         return Err(BatchDependencyError::EmptyBatch);
     }
@@ -307,7 +311,7 @@ mod tests {
         });
 
         // Step 1 depends on 0
-        let mut deps1 = Vec::new(env);
+        let mut deps1 = Vec::new(&env);
         deps1.push_back(0);
         steps.push_back(BatchStep {
             id: 1,
@@ -349,9 +353,9 @@ mod tests {
         let order = order.unwrap();
         assert_eq!(order.len(), 3);
         // Step 0 must come before step 1, which must come before step 2
-        let pos0 = order.iter().position(|&x| x == 0).unwrap();
-        let pos1 = order.iter().position(|&x| x == 1).unwrap();
-        let pos2 = order.iter().position(|&x| x == 2).unwrap();
+        let pos0 = order.iter().position(|x| x == 0).unwrap();
+        let pos1 = order.iter().position(|x| x == 1).unwrap();
+        let pos2 = order.iter().position(|x| x == 2).unwrap();
         assert!(pos0 < pos1);
         assert!(pos1 < pos2);
     }

@@ -22,6 +22,7 @@ version = "0.1.0"
 dependencies = [
  "pause_manager",
  "payroll",
+ "payroll_registry",
  "proof_verifier",
  "salary_commitment",
  "soroban-sdk",
@@ -404,6 +405,7 @@ version = "0.1.0"
 dependencies = [
  "audit_module",
  "payroll",
+ "payroll_registry",
  "proof_verifier",
  "salary_commitment",
  "soroban-sdk",

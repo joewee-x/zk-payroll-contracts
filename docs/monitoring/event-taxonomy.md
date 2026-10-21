@@ -143,6 +143,36 @@ Notes:
   failed or missing batch — investigate immediately.
 - The `PayrollRun` record is queryable on-chain via `get_payroll_run(run_id)`.
 
+### `ordering_committed`
+
+Emitted by `payroll` when an admin commits a canonical recipient ordering for a
+run nonce (`commit_recipient_ordering`, issue #815).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| topic[0] | `Symbol` | `"payroll"` |
+| topic[1] | `Symbol` | `"ordering_committed"` |
+| data[0] | `u64` | Opaque nonce reference (first 8 bytes of the nonce) |
+| data[1] | `u32` | Recipient count |
+| data[2] | `u64` | Ledger timestamp of commitment |
+
+Notes:
+- Privacy-safe: no recipient addresses or salary amounts are included.
+- See [payout-ordering-validation.md](../payout-ordering-validation.md).
+
+### `ordering_validated`
+
+Emitted by `payroll` when an execution path confirms the payout array matches
+the committed recipient ordering and consumes the commitment.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| topic[0] | `Symbol` | `"payroll"` |
+| topic[1] | `Symbol` | `"ordering_validated"` |
+| data[0] | `u64` | Opaque nonce reference |
+| data[1] | `u32` | Recipient count validated |
+| data[2] | `u64` | Ledger timestamp of validation |
+
 ### `PayrollProcessed`
 
 Emitted by `payment_executor` for each individual payment executed through the
